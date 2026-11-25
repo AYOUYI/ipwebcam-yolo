@@ -54,4 +54,4 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ## License
 
-The upstream project's README states the MIT license (no LICENSE file is included); this repository keeps the upstream commit history for attribution and is intended for learning and personal use.
+MIT — see [LICENSE](LICENSE) (applies to this fork's changes). The upstream README also states MIT; the upstream commit history is retained for attribution.

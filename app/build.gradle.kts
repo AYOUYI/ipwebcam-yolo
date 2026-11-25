@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         applicationId = "com.example.ipwebcamapp"
-        minSdk = 21
+        minSdk = 24
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
@@ -18,8 +18,18 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
+        ndk {
+            // The ONNX Runtime library ships one copy per CPU type; ARM covers phones and keeps the APK small
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
+    sourceSets {
+        // The repo's docs/ folder ships as assets so GET /docs serves API.md straight from it
+        getByName("main") {
+            assets.srcDir(rootProject.file("docs"))
+        }
+    }
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -65,6 +75,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.9.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("org.nanohttpd:nanohttpd:2.3.1")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.32.0")
     implementation("androidx.activity:activity-ktx:1.8.0")
     implementation("androidx.core:core-ktx:1.9.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")

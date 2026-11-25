@@ -1,62 +1,64 @@
 package com.example.ipwebcamapp;
 
 import android.Manifest;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.graphics.ImageFormat;
-import android.graphics.SurfaceTexture;
-import android.graphics.YuvImage;
-import android.hardware.camera2.*;
-import android.hardware.camera2.params.StreamConfigurationMap;
-import android.media.Image;
-import android.media.ImageReader;
+import android.content.ServiceConnection;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.Looper;
 import android.util.Log;
-import android.util.Size;
-import android.view.Surface;
-import android.view.TextureView;
-import android.view.ViewGroup;
-import android.view.ViewTreeObserver;
+import android.view.View;
 import android.widget.Button;
+import android.widget.ImageView;
 import android.widget.TextView;
+
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-import fi.iki.elonen.NanoHTTPD;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.PipedInputStream;
-import java.io.PipedOutputStream;
-import java.net.InetAddress;
-import java.net.NetworkInterface;
-import java.net.SocketException;
-import java.nio.ByteBuffer;
-import java.util.Arrays;
-import java.util.Enumeration;
-
-import static fi.iki.elonen.NanoHTTPD.newChunkedResponse;
-import static fi.iki.elonen.NanoHTTPD.newFixedLengthResponse;
+import java.util.Collections;
+import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "IPWebcamApp";
     private static final int CAMERA_REQUEST_CODE = 50;
+    private static final int NOTIFICATION_REQUEST_CODE = 60;
     private static final int SETTINGS_REQUEST_CODE = 100; // Unique request code for settings activity
-    private static int PORT = 8080;
-    private static final String BOUNDARY = "myboundary";
+    private static final long PREVIEW_INTERVAL_MS = 100;
 
-    private TextureView textureView;
-    private CameraDevice cameraDevice;
-    private CameraCaptureSession captureSession;
-    private CaptureRequest.Builder captureRequestBuilder;
-    private ImageReader imageReader;
-    private NanoHTTPD server;
+    private ImageView previewView;
     private TextView ipTextView;
-    private volatile byte[] currentFrame;
+    private TextView yoloStatusView;
+    private final Handler previewHandler = new Handler(Looper.getMainLooper());
+    private final long[] previewSequence = {-1};
+    private final DetectionOverlay overlay = new DetectionOverlay();
+    private String lastStatus;
+    private String lastYoloStatus;
 
-    private Size previewSize = new Size(640, 480);  // Default value
+    private CameraStreamService streamService;
+    private boolean bound;
+
+    private final ServiceConnection connection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            streamService = ((CameraStreamService.LocalBinder) service).getService();
+            Log.d(TAG, "onServiceConnected: Bound to the stream service");
+            updateStatus();
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            streamService = null;
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -64,34 +66,72 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
         Log.d(TAG, "onCreate: Activity created");
 
-        textureView = findViewById(R.id.textureView);
-        Log.d(TAG, "onCreate: TextureView initialized");
-
+        previewView = findViewById(R.id.previewView);
         ipTextView = findViewById(R.id.ipPortTextView);
-        Log.d(TAG, "onCreate: IP TextView initialized");
+        yoloStatusView = findViewById(R.id.yoloStatusView);
 
-        Button settingsButton = findViewById(R.id.settingsButton);  // Ensure you have a button with this ID
+        Button settingsButton = findViewById(R.id.settingsButton);
         settingsButton.setOnClickListener(v -> {
             Intent intent = new Intent(MainActivity.this, SettingsActivity.class);
             startActivityForResult(intent, SETTINGS_REQUEST_CODE);
         });
 
-        textureView.getViewTreeObserver().addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
-            @Override
-            public void onGlobalLayout() {
-                textureView.getViewTreeObserver().removeOnGlobalLayoutListener(this);
-                Log.d(TAG, "onGlobalLayout: TextureView layout observed");
-                adjustTextureViewSize();
-            }
+        Button stopButton = findViewById(R.id.stopButton);
+        stopButton.setOnClickListener(v -> {
+            stopService(new Intent(MainActivity.this, CameraStreamService.class));
+            Log.d(TAG, "Stop button: Stream service stopped");
         });
 
         checkCameraPermission();
         Log.d(TAG, "onCreate: Checked camera permissions");
+    }
 
-        startServer(PORT);
+    @Override
+    protected void onStart() {
+        super.onStart();
+        bindStreamService();
+        previewHandler.post(showFrame);
+    }
 
-        displayIpAddress();
-        Log.d(TAG, "onCreate: Displayed IP address");
+    @Override
+    protected void onStop() {
+        previewHandler.removeCallbacks(showFrame);
+        super.onStop();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (bound) {
+            unbindService(connection);
+            bound = false;
+        }
+        streamService = null;
+        super.onDestroy();
+    }
+
+    // The camera, the server and YOLO live in CameraStreamService, which keeps working whether or
+    // not this screen is visible; the activity only starts it and shows what it is producing.
+    private void bindStreamService() {
+        // Flags 0: attach to the service if it is running, but never create it from here
+        bound = bindService(new Intent(this, CameraStreamService.class), connection, 0);
+        Log.d(TAG, "bindStreamService: " + (bound ? "bound" : "service not running"));
+    }
+
+    private void startStreamService() {
+        ContextCompat.startForegroundService(this, new Intent(this, CameraStreamService.class));
+        Log.d(TAG, "startStreamService: Stream service started");
+        if (!bound) {
+            bindStreamService();
+        }
+        requestNotificationPermission();
+    }
+
+    private void requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this,
+                    new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATION_REQUEST_CODE);
+        }
     }
 
     private void checkCameraPermission() {
@@ -103,7 +143,7 @@ public class MainActivity extends AppCompatActivity {
                     new String[]{Manifest.permission.CAMERA}, CAMERA_REQUEST_CODE);
         } else {
             Log.d(TAG, "checkCameraPermission: Camera permission already granted");
-            startCamera(); // Permission already granted, start camera
+            startStreamService();
         }
     }
 
@@ -114,269 +154,93 @@ public class MainActivity extends AppCompatActivity {
         if (requestCode == CAMERA_REQUEST_CODE) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 Log.d(TAG, "onRequestPermissionsResult: Camera permission granted");
-                startCamera(); // Permission granted, start camera
+                startStreamService();
             } else {
                 Log.e(TAG, "onRequestPermissionsResult: Camera permission denied");
-                // Optionally, you can show a message or take appropriate action
+                ipTextView.setText(R.string.camera_permission_denied);
             }
         }
     }
 
-    private void startCamera() {
-        Log.d(TAG, "startCamera: Starting camera");
-        CameraManager manager = (CameraManager) getSystemService(CAMERA_SERVICE);
-        try {
-            String cameraId = manager.getCameraIdList()[0];
-            Log.d(TAG, "startCamera: Camera ID " + cameraId);
-            CameraCharacteristics characteristics = manager.getCameraCharacteristics(cameraId);
-            StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
-
-            if (map != null) {
-                previewSize = map.getOutputSizes(SurfaceTexture.class)[0];  // Choose a suitable size
-                Log.d(TAG, "startCamera: Preview size set to " + previewSize);
+    private final Runnable showFrame = new Runnable() {
+        @Override
+        public void run() {
+            if (!bound) {
+                bindStreamService();
             }
+            CameraStreamService service = streamService;
+            if (service != null) {
+                byte[] frame = service.latestFrameSince(previewSequence);
+                if (frame != null) {
+                    List<Detection> detections = service.isDrawBoxesEnabled()
+                            ? service.yoloState().detections
+                            : Collections.<Detection>emptyList();
+                    showPreview(frame, detections, service);
+                }
+                updateStatus();
+                updateYoloStatus(service);
+            }
+            previewHandler.postDelayed(this, PREVIEW_INTERVAL_MS);
+        }
+    };
 
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-                Log.w(TAG, "startCamera: Camera permission check failed");
+    /**
+     * Shows the frame exactly as it is streamed, so what is on screen has the same orientation as
+     * /video, /snapshot and the detection boxes, whichever way the stream setting is set.
+     */
+    private void showPreview(byte[] frame, List<Detection> detections, CameraStreamService service) {
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = 2;  // A quarter of the pixels is plenty for the on-screen preview
+        Bitmap bitmap = BitmapFactory.decodeByteArray(frame, 0, frame.length, options);
+        if (bitmap == null) {
+            return;
+        }
+        bitmap = overlay.draw(bitmap, detections, service.getFrameWidth(), service.getFrameHeight(),
+                getResources().getDisplayMetrics().density);
+        previewView.setImageBitmap(bitmap);
+    }
+
+    private void updateStatus() {
+        String status = getString(R.string.connect_to, streamService.getStreamUrl());
+        if (!streamService.isCameraOpen()) {
+            status += " " + getString(R.string.camera_off);
+        }
+        if (!status.equals(lastStatus)) {
+            lastStatus = status;
+            ipTextView.setText(status);
+            Log.d(TAG, "updateStatus: Displayed as " + status);
+        }
+    }
+
+    /** One line under the address while YOLO is switched on: loading, how fast it runs, or the error. */
+    private void updateYoloStatus(CameraStreamService service) {
+        if (!service.isYoloEnabled()) {
+            if (lastYoloStatus != null) {
+                lastYoloStatus = null;
+                yoloStatusView.setVisibility(View.GONE);
+            }
+            return;
+        }
+        YoloEngine.State state = service.yoloState();
+        String status;
+        switch (state.status) {
+            case YoloEngine.STATUS_LOADING:
+                status = getString(R.string.yolo_status_loading);
+                break;
+            case YoloEngine.STATUS_RUNNING:
+                status = getString(R.string.yolo_status_running, (double) state.inferencesPerSecond,
+                        state.latencyMs, state.detections.size());
+                break;
+            case YoloEngine.STATUS_ERROR:
+                status = getString(R.string.yolo_status_error, state.detail);
+                break;
+            default:
                 return;
-            }
-
-            manager.openCamera(cameraId, new CameraDevice.StateCallback() {
-                @Override
-                public void onOpened(@NonNull CameraDevice camera) {
-                    Log.d(TAG, "onOpened: Camera opened");
-                    cameraDevice = camera;
-                    startPreview();
-                }
-
-                @Override
-                public void onDisconnected(@NonNull CameraDevice camera) {
-                    Log.w(TAG, "onDisconnected: Camera disconnected");
-                    cameraDevice.close();
-                    cameraDevice = null;
-                }
-
-                @Override
-                public void onError(@NonNull CameraDevice camera, int error) {
-                    Log.e(TAG, "onError: Camera error " + error);
-                    cameraDevice.close();
-                    cameraDevice = null;
-                }
-            }, null);
-        } catch (CameraAccessException e) {
-            e.printStackTrace();
-            Log.e(TAG, "startCamera: CameraAccessException", e);
         }
-    }
-
-    private void startPreview() {
-        Log.d(TAG, "startPreview: Starting camera preview");
-        SurfaceTexture surfaceTexture = textureView.getSurfaceTexture();
-        surfaceTexture.setDefaultBufferSize(previewSize.getWidth(), previewSize.getHeight());
-        Log.d(TAG, "startPreview: SurfaceTexture buffer size set");
-
-        Surface surface = new Surface(surfaceTexture);
-        Log.d(TAG, "startPreview: Surface created");
-
-        try {
-            captureRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-            Log.d(TAG, "startPreview: CaptureRequest.Builder created");
-
-            captureRequestBuilder.addTarget(surface);
-            Log.d(TAG, "startPreview: Target surface added to CaptureRequest");
-
-            imageReader = ImageReader.newInstance(previewSize.getWidth(), previewSize.getHeight(), ImageFormat.YUV_420_888, 2);
-            Log.d(TAG, "startPreview: ImageReader created with size " + previewSize);
-
-            imageReader.setOnImageAvailableListener(reader -> {
-                Image image = reader.acquireLatestImage();
-                if (image != null) {
-                    try {
-                        byte[] nv21 = yuv420ToNV21(image);
-                        YuvImage yuvImage = new YuvImage(nv21, ImageFormat.NV21, image.getWidth(), image.getHeight(), null);
-                        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-                        yuvImage.compressToJpeg(new android.graphics.Rect(0, 0, image.getWidth(), image.getHeight()), 80, outputStream);
-                        byte[] jpegBytes = outputStream.toByteArray();
-                        synchronized (this) {
-                            currentFrame = jpegBytes;
-                        }
-                    } catch (Exception e) {
-                        Log.e(TAG, "Error processing image", e);
-                    } finally {
-                        image.close();
-                    }
-                }
-            }, null);
-
-            Surface imageReaderSurface = imageReader.getSurface();
-            captureRequestBuilder.addTarget(imageReaderSurface);
-            Log.d(TAG, "startPreview: ImageReader surface added to CaptureRequest");
-
-            // Enable auto-focus
-            captureRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
-            Log.d(TAG, "startPreview: Auto-focus mode set");
-
-            cameraDevice.createCaptureSession(Arrays.asList(surface, imageReaderSurface), new CameraCaptureSession.StateCallback() {
-                @Override
-                public void onConfigured(@NonNull CameraCaptureSession session) {
-                    Log.d(TAG, "onConfigured: Capture session configured");
-                    captureSession = session;
-                    try {
-                        captureSession.setRepeatingRequest(captureRequestBuilder.build(), new CameraCaptureSession.CaptureCallback() {
-                            @Override
-                            public void onCaptureCompleted(@NonNull CameraCaptureSession session, @NonNull CaptureRequest request, @NonNull TotalCaptureResult result) {
-                                Log.d(TAG, "onCaptureCompleted: Capture completed");
-                                super.onCaptureCompleted(session, request, result);
-                            }
-                        }, null);
-                    } catch (CameraAccessException e) {
-                        e.printStackTrace();
-                        Log.e(TAG, "onConfigured: CameraAccessException during capture session setup", e);
-                    }
-                }
-
-                @Override
-                public void onConfigureFailed(@NonNull CameraCaptureSession session) {
-                    Log.e(TAG, "onConfigureFailed: Capture session configuration failed");
-                }
-            }, null);
-        } catch (CameraAccessException e) {
-            e.printStackTrace();
-            Log.e(TAG, "startPreview: CameraAccessException during preview setup", e);
-        }
-    }
-
-    private void adjustTextureViewSize() {
-        Log.d(TAG, "adjustTextureViewSize: Adjusting TextureView size");
-        ViewGroup.LayoutParams layoutParams = textureView.getLayoutParams();
-        layoutParams.width = previewSize.getWidth();
-        layoutParams.height = previewSize.getHeight();
-        textureView.setLayoutParams(layoutParams);
-        Log.d(TAG, "adjustTextureViewSize: TextureView size adjusted to " + previewSize);
-    }
-
-    private void startServer(int port) {
-        if (server != null) {
-            server.stop();
-            Log.d(TAG, "startServer: NanoHTTPD server stopped");
-        }
-
-        server = new NanoHTTPD(port) {
-            @Override
-            public Response serve(IHTTPSession session) {
-                Log.d(TAG, "serve: Received request with URI " + session.getUri());
-                if ("/video".equals(session.getUri())) {
-                    return streamVideo();  // Call once per request
-                } else {
-                    String response = "IP Webcam Running!";
-                    return newFixedLengthResponse(response);
-                }
-            }
-        };
-
-        try {
-            server.start();
-            Log.d(TAG, "startServer: NanoHTTPD server started on port " + port);
-        } catch (IOException e) {
-            e.printStackTrace();
-            Log.e(TAG, "startServer: Failed to start NanoHTTPD server", e);
-        }
-    }
-
-    private NanoHTTPD.Response streamVideo() {
-        Log.d(TAG, "streamVideo: Streaming video");
-        try {
-            PipedOutputStream outputStream = new PipedOutputStream();
-            PipedInputStream inputStream = new PipedInputStream(outputStream);
-
-            // Start a new thread to continuously write video frames to the output stream
-            new Thread(() -> {
-                try {
-                    while (true) {
-                        byte[] frame;
-                        synchronized (this) {
-                            frame = currentFrame;
-                        }
-                        if (frame != null) {
-                            outputStream.write(("--" + BOUNDARY + "\r\n").getBytes());
-                            outputStream.write("Content-Type: image/jpeg\r\n".getBytes());
-                            outputStream.write(("Content-Length: " + frame.length + "\r\n").getBytes());
-                            outputStream.write("\r\n".getBytes());
-                            outputStream.write(frame);
-                            outputStream.write("\r\n".getBytes());
-                            outputStream.flush();
-                            Log.d(TAG, "streamVideo: Frame written to output stream");
-                        }
-                        Thread.sleep(16);  // Control frame rate
-                    }
-                } catch (IOException | InterruptedException e) {
-
-                    e.printStackTrace();
-                    Log.e(TAG, "streamVideo: Exception in video streaming thread", e);
-                } finally {
-                    try {
-                        outputStream.close();
-                        Log.d(TAG, "streamVideo: Output stream closed");
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                        Log.e(TAG, "streamVideo: IOException when closing output stream", e);
-                    }
-                }
-            }).start();
-
-            return newChunkedResponse(NanoHTTPD.Response.Status.OK, "multipart/x-mixed-replace; boundary=" + BOUNDARY, inputStream);
-        } catch (IOException e) {
-            e.printStackTrace();
-            Log.e(TAG, "streamVideo: IOException in streamVideo", e);
-            return newFixedLengthResponse(NanoHTTPD.Response.Status.INTERNAL_ERROR, "text/plain", "Error streaming video");
-        }
-    }
-
-    private void displayIpAddress() {
-        Log.d(TAG, "displayIpAddress: Displaying IP address");
-        String ipAddress = getLocalIpAddress();
-        if (ipAddress == null) {
-            ipAddress = "Unknown IP";
-            Log.w(TAG, "displayIpAddress: IP address is unknown");
-        }
-        String link = "http://" + ipAddress + ":" + PORT + "/video";
-        ipTextView.setText("Connect to: " + link);
-        Log.d(TAG, "displayIpAddress: IP address displayed as " + link);
-    }
-
-    private String getLocalIpAddress() {
-        Log.d(TAG, "getLocalIpAddress: Getting local IP address");
-        try {
-            for (Enumeration<NetworkInterface> en = NetworkInterface.getNetworkInterfaces(); en.hasMoreElements();) {
-                NetworkInterface networkInterface = en.nextElement();
-                for (Enumeration<InetAddress> enumIpAddr = networkInterface.getInetAddresses();
-                     enumIpAddr.hasMoreElements();) {
-                    InetAddress inetAddress = enumIpAddr.nextElement();
-                    if (!inetAddress.isLoopbackAddress() && inetAddress.getHostAddress().length() < 16) {
-                        Log.d(TAG, "getLocalIpAddress: Found IP address " + inetAddress.getHostAddress());
-                        return inetAddress.getHostAddress();
-                    }
-                }
-            }
-        } catch (SocketException e) {
-            e.printStackTrace();
-            Log.e(TAG, "getLocalIpAddress: SocketException", e);
-        }
-        return null;
-    }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        Log.d(TAG, "onDestroy: Destroying activity");
-        if (cameraDevice != null) {
-            cameraDevice.close();
-            cameraDevice = null;
-            Log.d(TAG, "onDestroy: Camera device closed");
-        }
-        if (server != null) {
-            server.stop();
-            Log.d(TAG, "onDestroy: NanoHTTPD server stopped");
+        if (!status.equals(lastYoloStatus)) {
+            lastYoloStatus = status;
+            yoloStatusView.setText(status);
+            yoloStatusView.setVisibility(View.VISIBLE);
         }
     }
 
@@ -384,52 +248,16 @@ public class MainActivity extends AppCompatActivity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == SETTINGS_REQUEST_CODE && resultCode == RESULT_OK) {
-            int newPort = data.getIntExtra("port", PORT);
-            if (newPort != PORT) {
-                PORT = newPort;
-                Log.d(TAG, "onActivityResult: Port updated to " + PORT);
-                startServer(PORT);
-                displayIpAddress();
-            }
+            boolean portrait = streamService != null && streamService.isPortraitStream();
+            boolean yolo = streamService != null && streamService.isYoloEnabled();
+            boolean drawBoxes = streamService != null && streamService.isDrawBoxesEnabled();
+            Log.d(TAG, "onActivityResult: Settings saved, YOLO " + (yolo ? "on" : "off")
+                    + ", draw boxes " + (drawBoxes ? "on" : "off"));
+            ContextCompat.startForegroundService(this, new Intent(this, CameraStreamService.class)
+                    .putExtra(CameraStreamService.EXTRA_PORT, data.getIntExtra("port", 0))
+                    .putExtra(CameraStreamService.EXTRA_PORTRAIT, data.getBooleanExtra(CameraStreamService.EXTRA_PORTRAIT, portrait))
+                    .putExtra(CameraStreamService.EXTRA_YOLO, data.getBooleanExtra(CameraStreamService.EXTRA_YOLO, yolo))
+                    .putExtra(CameraStreamService.EXTRA_DRAW_BOXES, data.getBooleanExtra(CameraStreamService.EXTRA_DRAW_BOXES, drawBoxes)));
         }
-    }
-    private byte[] yuv420ToNV21(Image image) {
-        int width = image.getWidth();
-        int height = image.getHeight();
-
-        ByteBuffer yBuffer = image.getPlanes()[0].getBuffer();
-        ByteBuffer uBuffer = image.getPlanes()[1].getBuffer();
-        ByteBuffer vBuffer = image.getPlanes()[2].getBuffer();
-
-        int yRowStride = image.getPlanes()[0].getRowStride();
-        int uvRowStride = image.getPlanes()[1].getRowStride();
-        int uvPixelStride = image.getPlanes()[1].getPixelStride();
-
-        byte[] nv21 = new byte[width * height * 3 / 2];
-
-        // Copy Y plane
-        int pos = 0;
-        for (int row = 0; row < height; row++) {
-            int yRowStart = row * yRowStride;
-            yBuffer.position(yRowStart);
-            yBuffer.get(nv21, pos, width);
-            pos += width;
-        }
-
-        // Interleave VU (not UV) for NV21
-        int chromaHeight = height / 2;
-        int chromaWidth = width / 2;
-        for (int row = 0; row < chromaHeight; row++) {
-            int uvRowStart = row * uvRowStride;
-            for (int col = 0; col < chromaWidth; col++) {
-                int index = uvRowStart + col * uvPixelStride;
-                vBuffer.position(index);
-                uBuffer.position(index);
-                nv21[pos++] = vBuffer.get(); // V
-                nv21[pos++] = uBuffer.get(); // U
-            }
-        }
-
-        return nv21;
     }
 }

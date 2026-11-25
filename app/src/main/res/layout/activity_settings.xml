@@ -19,4 +19,44 @@
             android:layout_below="@id/portEditText"
             android:layout_alignParentEnd="true"
             android:layout_marginTop="16dp"/>
+
+    <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/portraitSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/saveButton"
+            android:layout_marginTop="32dp"
+            android:text="@string/portrait_stream"/>
+
+    <TextView
+            android:id="@+id/portraitHint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/portraitSwitch"
+            android:text="@string/portrait_stream_hint"
+            android:textSize="14sp"/>
+
+    <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/yoloSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/portraitHint"
+            android:layout_marginTop="24dp"
+            android:text="@string/yolo_toggle"/>
+
+    <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/drawBoxesSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/yoloSwitch"
+            android:layout_marginTop="8dp"
+            android:text="@string/draw_boxes"/>
+
+    <TextView
+            android:id="@+id/yoloHint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_below="@id/drawBoxesSwitch"
+            android:text="@string/yolo_hint"
+            android:textSize="14sp"/>
 </RelativeLayout>

@@ -1,3 +1,19 @@
 <resources>
     <string name="app_name">IPWebcamApp</string>
+    <string name="preview">Live camera preview</string>
+    <string name="stop">Stop</string>
+    <string name="connect_to">Connect to: %1$s</string>
+    <string name="camera_off">camera paused, waiting to resume…</string>
+    <string name="camera_permission_denied">Camera permission is required to stream</string>
+    <string name="notification_channel">IP Webcam</string>
+    <string name="notification_title">IP Webcam is running</string>
+    <string name="notification_stop">Stop</string>
+    <string name="portrait_stream">Portrait stream</string>
+    <string name="portrait_stream_hint">Send the picture upright when the phone stands on its short end. Takes effect right after saving.</string>
+    <string name="yolo_toggle">Enable YOLO detection</string>
+    <string name="draw_boxes">Draw boxes on screen</string>
+    <string name="yolo_hint">YOLO finds people, pets and other everyday objects in the picture. Results can also be read from a computer at /detections, and /snapshot returns the current picture. Takes effect right after saving.</string>
+    <string name="yolo_status_loading">YOLO is loading the model…</string>
+    <string name="yolo_status_running">YOLO %1$.1f per second, %2$d ms per frame, %3$d found</string>
+    <string name="yolo_status_error">YOLO error: %1$s</string>
 </resources>

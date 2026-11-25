@@ -1,87 +1,57 @@
-# IP Webcam App
+# IP Webcam + On-Device YOLO
 
-A simple Android app that turns your device into an IP webcam. Stream live video from your device's camera over HTTP and view it on any web browser.
+把一部闲置 Android 手机变成**家庭安防摄像头**：MJPEG 实时推流、锁屏/息屏不中断、端侧 YOLO 目标检测（ONNX Runtime）、HTTP 接口取检测结果与设备状态，无需任何云服务。
 
-![Project Demo](WebCamDemo.gif)
+An Android app that turns a spare phone into an always-on IP camera: MJPEG streaming that survives screen-off, on-device YOLO detection (ONNX Runtime), and a small HTTP API for detections, settings and device status. No cloud involved.
 
-**Note:** This project was initially developed in a hurry, and there are plans to include audio streaming & saving files in future updates.
+*Based on [Sameerakhatoon/IPWebCamVideo](https://github.com/Sameerakhatoon/IPWebCamVideo) — the camera/server skeleton comes from there; the foreground service, YOLO pipeline and HTTP API were built on top.*
 
-## Features
+## 功能特性
 
-- **Live Video Streaming**: Streams live video from your device's camera using a built-in HTTP server.
-- **Customizable Port Number**: Allows you to change the port number for the HTTP server through a settings page.
-- **Automatic IP Address Detection**: Displays the IP address and port number for easy access to the video stream.
+- **实时 MJPEG 推流**：`http://<手机IP>:8080/video`，浏览器 / VLC / OpenCV `cv2.VideoCapture` 直接可用，约 24–30 fps @ 1280×720
+- **锁屏息屏不中断**：摄像头型前台服务 + WakeLock/WifiLock + 断线 3 秒自动重连（重试去重，不会风暴）
+- **竖屏/横屏传输**：设置里一键切换，视频流、截图、检测框坐标三者方向始终一致
+- **端侧 YOLO**：yolo11n ONNX（416 输入，CPU 2 线程，约 4 次/秒），`/detections` 返回 bbox + 类别 + 置信度
+- **管理接口**：`/settings` 远程改设置（端口不可改）、`/status` 设备电量/温度/网络/出帧心跳、`/docs` 在线文档
+- **屏幕画框**：YOLO 开启后可在预览上叠加检测框（设置里开关，依赖 YOLO）
 
-## Requirements
+## HTTP 接口
 
-- Android 6.0 (Marshmallow) or higher
-- Camera permission
-- Internet access
+完整文档（路由 / 入参 / 出参）见 **[docs/API.md](docs/API.md)**，手机上也有：`GET http://<手机IP>:8080/docs`
 
-## Permissions
+| 路由 | 说明 |
+|---|---|
+| `/video` | MJPEG 实时流（长连接） |
+| `/snapshot[?inferred]` | 最新一帧 JPEG（`?inferred` 取 YOLO 最近推理那帧） |
+| `/detections` | YOLO 最新结果 JSON（bbox 为帧像素坐标） |
+| `/settings` | GET 读 / POST 改 `portrait`、`yolo`、`draw_boxes`（全有或全无校验） |
+| `/status` | 电量、充电、温度、屏幕、Wi-Fi、服务心跳 |
+| `/docs` | 本文档（构建时从 `docs/` 打包进 APK） |
 
-- `CAMERA`: To access the device's camera.
-- `INTERNET`: To serve the video stream over HTTP.
-- `ACCESS_NETWORK_STATE`: To detect network state changes.
+Python 端示例：
 
-## Getting Started
+```python
+import cv2, requests
 
-1. **Clone the Repository**
-    
-    `git clone https://github.com/yourusername/ip-webcam-app.git`
-    
-2. **Open the Project**
-    
-    Open the project in Android Studio.
-    
-3. **Build and Run**
-    
-    Build and run the app on an Android device or emulator.
-    
-4. **Access the Video Stream**
-    
-    Once the app is running, you can access the video stream using the IP address and port number displayed in the app. Open a web browser and navigate to `http://<IP_ADDRESS>:<PORT>/video`.
-    
+cap = cv2.VideoCapture("http://192.168.110.66:8080/video")   # 实时流，长连接不受单次请求延迟影响
+session = requests.Session()                                  # 轮询请复用连接
+detections = session.get("http://192.168.110.66:8080/detections", timeout=5).json()
+```
 
-## Configuration
+## 构建与安装
 
-You can change the port number used by the HTTP server through the settings activity:
+```bash
+./gradlew assembleDebug          # 需要 JDK 17 + Android SDK，minSdk 24
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
 
-1. Tap on the **Settings** button in the main activity.
-2. Enter a new port number and tap **Save**.
-3. The app will restart the server with the new port number.
+首次启动授予相机权限；设置页可改端口、切换竖屏传输、开关 YOLO/画框。自定义模型：把 `model.onnx` + `classes.txt` 放到应用外部目录 `yolo/` 下即可热替换（详见 docs/API.md）。
 
-## Future Plans
+## 已知限制
 
-- **Audio Streaming**: We plan to add support for streaming audio from the device in future updates. Stay tuned!
-
-## Code Structure
-
-- **`MainActivity.java`**: Main activity handling camera setup, preview, and HTTP server.
-- **`SettingsActivity.java`**: Activity for configuring the port number.
-- **`activity_main.xml`**: Layout for the main activity, including `TextureView` for camera preview and a `TextView` for IP address display.
-- **`activity_settings.xml`**: Layout for the settings activity, including an `EditText` for port number input and a `Button` for saving the settings.
-
-## Troubleshooting
-
-- **App Crashes on Settings Button**: Ensure that your `SettingsActivity` is correctly defined in the AndroidManifest.xml file and that the `SettingsActivity` layout file is properly set up.
-    
-- **Video Stream Not Displaying**: Check that your device has a stable network connection and that the port number is not being used by another application.
-    
-
-## Contributing
-
-Contributions are welcome! Please fork the repository and submit a pull request with your changes.
+- 息屏状态下冷启动 App（进程被杀后系统拉起）时，Android 摄像头策略会拒绝访问，屏幕亮起一次后自动恢复；相机连接建立后息屏推流不受影响
+- 模型检测参数当前固定（置信度 0.30 / NMS IoU 0.45 / 最多 30 目标），见 `YoloDecoder`
 
 ## License
 
-This project is licensed under the MIT License. See the LICENSE file for details.
-
-## Acknowledgements
-
-- **[NanoHTTPD](https://github.com/NanoHttpd/nanohttpd)**: A lightweight HTTP server for Java.
-- **[Camera2 API](https://developer.android.com/reference/android/hardware/camera2/package-summary)**: Android API for camera access and control.
-
----
-
-Feel free to tweak any part of this to better fit your project's specifics!
+The upstream project's README states the MIT license (no LICENSE file is included); this repository keeps the upstream commit history for attribution and is intended for learning and personal use.

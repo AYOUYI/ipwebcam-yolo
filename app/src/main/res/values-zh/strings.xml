@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="preview">实时画面预览</string>
+    <string name="stop">停止</string>
+    <string name="connect_to">访问地址：%1$s</string>
+    <string name="camera_off">相机暂停中，等待恢复…</string>
+    <string name="camera_permission_denied">需要相机权限才能推流</string>
+    <string name="notification_channel">IP Webcam</string>
+    <string name="notification_title">IP Webcam 运行中</string>
+    <string name="notification_stop">停止</string>
+    <string name="portrait_stream">竖屏传输</string>
+    <string name="portrait_stream_hint">手机竖着摆放时开启，画面会转成竖屏方向发送，保存后立即生效。</string>
+    <string name="yolo_toggle">开启 YOLO 检测</string>
+    <string name="draw_boxes">在画面上画框</string>
+    <string name="yolo_hint">YOLO 会在画面里找行人、宠物等常见物体。检测结果也可以从电脑上通过 /detections 接口读取，/snapshot 返回当前画面。保存后立即生效。</string>
+    <string name="yolo_status_loading">YOLO 正在加载模型…</string>
+    <string name="yolo_status_running">YOLO 每秒 %1$.1f 次 · 每帧 %2$d 毫秒 · 发现 %3$d 个目标</string>
+    <string name="yolo_status_error">YOLO 出错：%1$s</string>
+</resources>
